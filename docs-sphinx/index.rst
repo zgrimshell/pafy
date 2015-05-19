@@ -11,6 +11,20 @@ Development / Source code / Bug reporting: `github.com/np1/pafy
 
 Homepage: `np1.github.io/pafy <http://np1.github.io/pafy/>`_
 
+API Keys
+========
+
+Specifying an API key is optional, as pafy includes one.  However, it is prefered that software calling pafy provides it's own API key, and the default may be removed in the future.
+
+`Information from Google about obtaining an API key <https://developers.google.com/youtube/registering_an_application>`_
+
+.. function:: pafy.set_api_key(key)
+
+    "Sets the API key for pafy to use."
+
+    :param key: API key to use
+
+
 Pafy Objects and Stream Objects
 ===============================
 
@@ -111,6 +125,10 @@ attributes are available
 .. attribute:: Pafy.published
 
     The upload date of the video (e.g., 2012-10-02 17:17:24) (*str*)
+
+.. attribute:: Pafy.mix
+
+    The mix playlist provided by youtube for this video (*dict*)
 
 .. attribute:: Pafy.rating
 

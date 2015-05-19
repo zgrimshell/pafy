@@ -48,12 +48,12 @@ if sys.version_info[:2] >= (3, 0):
     # pylint: disable=E0611,F0401,I0011
     from urllib.request import build_opener
     from urllib.error import HTTPError, URLError
-    from urllib.parse import parse_qs, unquote_plus
+    from urllib.parse import parse_qs, unquote_plus, urlencode
     uni, pyver = str, 3
 
 else:
     from urllib2 import build_opener, HTTPError, URLError
-    from urllib import unquote_plus
+    from urllib import unquote_plus, urlencode
     from urlparse import parse_qs
     uni, pyver = unicode, 2
 
@@ -162,9 +162,13 @@ def get_video_info(video_id, newurl=None):
 
 
 def get_video_gdata(video_id):
-    """ Return xml string containing video metadata from gdata api. """
+    """ Return json string containing video metadata from gdata api. """
     new.callback("Fetching video gdata")
-    url = g.urls['gdata'] % video_id
+    query = {'part': 'id,snippet,statistics',
+             'maxResults': 1,
+             'id': video_id,
+             'key': g.api_key}
+    url = g.urls['gdata'] + '?' + urlencode(query)
     gdata = fetch_decode(url)  # unicode
     dbg("Fetched video gdata")
     new.callback("Fetched video gdata")
@@ -191,7 +195,7 @@ class g(object):
     """ Class for holding constants needed throughout the module. """
 
     urls = {
-        'gdata': "http://gdata.youtube.com/feeds/api/videos/%s?v=2",
+        'gdata': "https://www.googleapis.com/youtube/v3/videos",
         'watchv': "http://www.youtube.com/watch?v=%s",
         'vidinfo': ('http://www.youtube.com/get_video_info?'
                     'video_id=%s&asv=3&el=detailpage&hl=en_US'),
@@ -200,6 +204,7 @@ class g(object):
         'age_vidinfo': ('http://www.youtube.com/get_video_info?video_id=%s&'
                         'eurl=https://youtube.googleapis.com/v/%s&sts=1588')
     }
+    api_key = "AIzaSyCIM4EzNqi1in22f4Z3Ru3iYvLaY8tc3bo"
     user_agent = "pafy " + __version__
     UEFSM = 'url_encoded_fmt_stream_map'
     AF = 'adaptive_fmts'
@@ -959,8 +964,12 @@ class Stream(object):
             outfh.write(chunk)
             elapsed = time.time() - t0
             bytesdone += len(chunk)
-            rate = ((bytesdone - offset) / 1024) / elapsed
-            eta = (total - bytesdone) / (rate * 1024)
+            if elapsed:
+                rate = ((bytesdone - offset) / 1024) / elapsed
+                eta = (total - bytesdone) / (rate * 1024)
+            else: # Avoid ZeroDivisionError
+                rate = 0
+                eta = 0
             progress_stats = (bytesdone, bytesdone * 1.0 / total, rate, eta)
 
             if not chunk:
@@ -1033,13 +1042,13 @@ class Pafy(object):
         self._length = None
         self._author = None
         self._formats = None
-        self._videoid = None
         self.ciphertag = None  # used by Stream class in url property def
         self._duration = None
         self._keywords = None
         self._bigthumb = None
         self._viewcount = None
         self._bigthumbhd = None
+        self._mix_pl = None
         self.expiry = None
         self.playlist_meta = None
 
@@ -1086,7 +1095,8 @@ class Pafy(object):
                 self._dashurl = re.sub(r"/s/[\w\.]+",
                                        "/signature/%s" % s, self._dashurl)
 
-        self.dash = _extract_dash(self._dashurl)
+        if self._dashurl != 'unknown':
+            self.dash = _extract_dash(self._dashurl)
         self._have_basic = 1
         self._process_streams()
         self.expiry = time.time() + g.lifespan
@@ -1108,7 +1118,6 @@ class Pafy(object):
         self._title = _get_lst('title')
         self._dashurl = _get_lst('dashmpd')
         self._author = _get_lst('author')
-        self._videoid = _get_lst('video_id')
         self._rating = float(_get_lst('avg_rating', 0.0))
         self._length = int(_get_lst('length_seconds', 0))
         self._viewcount = int(_get_lst('view_count'), 0)
@@ -1128,21 +1137,15 @@ class Pafy(object):
             return
 
         gdata = get_video_gdata(self.videoid)
-        t0 = "{http://search.yahoo.com/mrss/}"
-        t1 = "{http://www.w3.org/2005/Atom}"
-        t2 = "{http://gdata.youtube.com/schemas/2007}"
-        gdata = gdata.encode("utf8")
-        tree = ElementTree.fromstring(gdata)
-        groups = tree.find(t0 + "group")
-        self._published = uni(tree.find(t1 + "published").text)
-        rating = tree.find(t2 + "rating")  # already exists in basic data
-        self._likes = int(rating.get("numLikes") if rating is not None else 0)
-        dislikes = int(rating.get("numDislikes") if rating is not None else 0)
-        self._dislikes = dislikes
-        self._description = uni(groups.find(t0 + "description").text)
-        self._category = uni(groups.find(t0 + "category").text)
-        username = tree.find(t1 + "author/" + t1 + "uri").text.split("/")[-1]
-        self._username = username
+        item = json.loads(gdata)['items'][0]
+        snippet = item['snippet']
+        self._published = uni(snippet['publishedAt'])
+        self._description = uni(snippet["description"])
+        self._category = uni(snippet['categoryId'])
+        self._username = uni(snippet['channelTitle'])
+        statistics = item["statistics"]
+        self._likes = int(statistics["likeCount"])
+        self._dislikes = int(statistics["dislikeCount"])
         self._have_gdata = 1
 
     def _process_streams(self):
@@ -1349,6 +1352,16 @@ class Pafy(object):
         self._fetch_gdata()
         return self._dislikes
 
+    @property
+    def mix(self):
+        """ The playlist for the related YouTube mix. Returns a dict containing Pafy objects. """
+        if self._mix_pl is None:
+            try:
+                self._mix_pl = get_playlist("RD" + self.videoid)
+            except IOError:
+                return None
+        return self._mix_pl
+
     def _getbest(self, preftype="any", ftypestrict=True, vidonly=False):
         """
         Return the highest resolution video available.
@@ -1438,8 +1451,9 @@ def get_playlist(playlist_url, basic=False, gdata=False, signature=True,
     """
     # pylint: disable=R0914
     # too many local vars
-    x = (r"-_0-9a-zA-Z",) * 2 + (r'(?:\&|\#.{1,1000})',)
-    regx = re.compile(r'(?:^|[^%s]+)([%s]{18,})(?:%s|$)' % x)
+
+    # Normal playlists start with PL, Mixes start with RD + first video ID
+    regx = re.compile(r'((?:RD|PL)[-_0-9a-zA-Z]+)')
     m = regx.search(playlist_url)
 
     if not m:
@@ -1515,3 +1529,8 @@ def get_playlist(playlist_url, basic=False, gdata=False, signature=True,
         callback("Added video: %s" % v['title'])
 
     return playlist
+
+
+def set_api_key(key):
+    """Sets the api key to be used with youtube."""
+    g.api_key = key
